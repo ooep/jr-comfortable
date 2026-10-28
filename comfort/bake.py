@@ -30,7 +30,7 @@ if _delay_dir and _delay_dir not in sys.path:
 from baker import common, holidays, suki, suki_timetable  # noqa: E402
 from baker.delays import resolve_direct_by_time  # noqa: E402
 
-from comfort.sources import jreast  # noqa: E402
+from comfort.sources import jreast, osakametro  # noqa: E402
 
 
 def _calendar_day(now):
@@ -55,9 +55,11 @@ def _direction(number):
 def _resolve(index, stt, rec, now):
     direct = []
     seen = set()
-    for line in rec["suki_pools"]:
+    pools = rec.get("suki_pools") or rec.get("pools") or []
+    direction = _direction(rec.get("number") or "")
+    for line in pools:
         hits = index.match_direct(
-            line, rec["from"], _direction(rec["number"]), rec["type"], top=256
+            line, rec["from"], direction, rec.get("type"), top=256
         ) or []
         for c in hits:
             key = str(c["key"])
@@ -86,12 +88,18 @@ def bake(delay_dir, out_dir, files=None):
     print(f"suki index: {len(index.trains)} keys; timetable runs: {len(stt.runs)} ({stt.source_file})")
 
     src = common.Source()
-    try:
-        raw = jreast.fetch(src, files)
-    except Exception as exc:  # noqa: BLE001 - fail closed, keep last good file
-        print(f"jreast comfort fetch failed: {type(exc).__name__}: {str(exc)[:160]}")
-        return 1
-    print(f"jreast comfort candidates: {len(raw)}")
+    raw = []
+    for name, pull in (
+        ("jreast", lambda: jreast.fetch(src, files)),
+        ("osakametro", lambda: osakametro.fetch(src, index)),
+    ):
+        try:
+            got = pull()
+        except Exception as exc:  # noqa: BLE001 - fail closed per source
+            print(f"{name} comfort fetch failed: {type(exc).__name__}: {str(exc)[:160]}")
+            continue
+        print(f"{name} comfort candidates: {len(got)}")
+        raw.extend(got)
 
     claimed = {}
     trains = []
@@ -114,16 +122,16 @@ def bake(delay_dir, out_dir, files=None):
         if slot in claimed:
             stats["key_collision"] += 1
             continue
-        claimed[slot] = rec["number"]
+        claimed[slot] = rec.get("number") or rec.get("vehicle") or ""
         entry = {
             "op": rec["op"],
             "line": rec["line"],
             "railway": rec["railway"],
-            "number": rec["number"],
-            "type": rec["type"],
+            "number": rec.get("number"),
+            "type": rec.get("type"),
             "from": rec["from"],
             "to": rec["to"],
-            "cars": rec["cars"],
+            "cars": rec.get("cars"),
             "comfort": rec["comfort"],
             "scheduled": resolved["scheduled"],
             "suki": [{
@@ -132,6 +140,8 @@ def bake(delay_dir, out_dir, files=None):
                 "overlap": resolved["cand"].get("overlap"),
             }],
         }
+        if rec.get("vehicle"):
+            entry["vehicle"] = rec["vehicle"]
         trains.append(entry)
         stats["matched"] += 1
 
