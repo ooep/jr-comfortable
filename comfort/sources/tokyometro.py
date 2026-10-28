@@ -45,20 +45,18 @@ WINDOW_FWD = 90
 
 # Lines whose end-of-line station is not where most trains enter the line:
 # Chiyoda's A direction is fed by JR through services via 綾瀬 (北綾瀬 only
-# sees the short branch shuttles), and Marunouchi's branch trains leave from
-# 方南町 rather than the main-line termini.
+# sees the short branch shuttles).
 ANCHOR_OVERRIDES = {
     ("C", "A"): "ayase",
-    ("M", "B"): "honancho",
 }
 
-# 三田線 shares the 目黒—白金高輪 section with 南北線, so its trains appear on
-# 南北線 station pages.  Anchoring only on the direction's end (目黒) captured
-# the northbound side alone; the southbound runs leave 白金台 towards 目黒 and
-# are published only on that interior page.  These pages are read after the
-# anchors and only fill slots no anchor claimed.
+# The 丸ノ内線 B direction runs 荻窪→池袋 on the main line and 方南町→池袋 on
+# the branch.  Anchoring B on the branch end alone (as it did before) read the
+# 50 branch departures and none of the ~70 main-line ones; the branch page is
+# now a fill page, exactly like 三田線 below.
 FILL_PAGES = {
     ("N", "B"): ("白金台",),
+    ("M", "B"): ("方南町",),
 }
 
 # 5-day average / actual levels are 1-6; the drawer's chip has three shades.
