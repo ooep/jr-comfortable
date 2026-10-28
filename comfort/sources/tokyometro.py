@@ -184,12 +184,15 @@ def _deps(stt, key, anchor_idx):
         if anchor_idx > len(runs):
             continue
         acc = rec["dep0"]
+        # The loop already lands on the anchor's *departure*: `s` stores a
+        # dwell after every station, so run_i + dwell_i for i < anchor_idx is
+        # the whole passage. Adding dwells[anchor_idx] on top shifted every
+        # page row one dwell late, which made 2-minute headways ambiguous.
         for i in range(anchor_idx):
             acc += runs[i]
             if i < len(dwells):
                 acc += dwells[i]
-        dep = acc + (dwells[anchor_idx] if anchor_idx < len(dwells) else 0)
-        out.append((dep, rec["dep0"]))
+        out.append((acc, rec["dep0"]))
     return out
 
 
