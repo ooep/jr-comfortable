@@ -1,8 +1,8 @@
 # jr-comfortable
 
-Per-train comfort data (congestion now; temperature / accessibility next) for
-the trains already shown on [jr.suki.ing](https://jr.suki.ing), refreshed every
-10 minutes by GitHub Actions.
+Per-train and per-car comfort data (congestion, in-car temperature, carriage
+facilities) for the trains already shown on [jr.suki.ing](https://jr.suki.ing),
+refreshed every 10 minutes by GitHub Actions.
 
 `data/comfort.json` is the whole product: each record is one live train, already
 pinned to the jr.suki.ing timetable key it will be drawn on, so the site needs
@@ -40,10 +40,16 @@ browser joins it the same way.
 
 | Source | Fields | Notes |
 |---|---|---|
-| JR-East (cloudrail, official app) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings |
+| JR-East (cloudrail, official app) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings; the public app feed has no per-car or temperature fields |
 | Osaka Metro | per-car congestion + temperature | all 9 lines, official app data |
 | JR-West | per-car congestion, temperature, facilities | Kinki/Hokuriku/Okayama/Hiroshima/Sanin; train-guide `trainmonitorinfo.json` (congestion %, °C, wheelchair/stroller/Wi-Fi/restroom/luggage per car) |
 | Tokyo Metro (CrowdNavi) | `congestion.level` 1–6, `congestion.est` | all 9 lines + through services (東武/東急/JR); per-station 列車別混雑グラフ, no API key needed |
+| Toei (CrowdNavi pages) | `congestion.level` 1–6, `congestion.est` | only runs that appear on a Tokyo Metro station chart (e.g. 三田線 through 目黒); not every Toei train |
+
+The site's drawer renders `congestion` as a chip, `congestion_cars` as one bar
+per car, `temperature_cars` as a min–max range, and `facilities` as an
+accessibility chip; the comfort row wraps so the accessibility chip is not
+truncated on narrow screens.
 
 ## Output
 
@@ -80,6 +86,11 @@ percentage and may exceed 100. Tokyo Metro publishes no percentage, so its
 records carry `level` (1-6) instead; `est: true` means today's measurement for
 that departure was not published yet and the value is the 5-day average, which
 the drawer labels "5日平均".
+
+Per-car sources add `congestion_cars` (percentage per car, `null` where the
+sensor is missing), `temperature_cars` (°C per car) and `facilities`
+(`wheelchair`, `stroller`, `wifi`, `restroom`, `luggage`) inside `comfort`.
+`cars` at the top level is the formation length.
 
 ## Run locally
 

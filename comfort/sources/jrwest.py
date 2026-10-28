@@ -79,11 +79,20 @@ def _dest(raw):
     return None if text in _DEST_IGNORE else text
 
 
+def _car_no(car):
+    try:
+        return int(car.get("carNo"))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _block(groups):
     """Coupled car sets -> flat per-car arrays + a train-level summary."""
     cong, temp, facilities = [], [], set()
     for group in groups or []:
-        for car in group.get("cars") or []:
+        # The feed lists cars in coupler order (4,3,2,1 for a 4-car set); the
+        # drawer draws one bar per car left to right, so sort by car number.
+        for car in sorted(group.get("cars") or [], key=_car_no):
             if car.get("status") != 1:
                 cong.append(None)
                 temp.append(None)
