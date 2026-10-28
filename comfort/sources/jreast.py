@@ -28,6 +28,12 @@ from baker import jreast_app as ja
 POOL_OVERRIDES = {
     "JR-East.Saikyo": ["川越線", "赤羽線", "東北本線", "山手線"],
     "JR-East.KeihinTohoku": ["根岸線", "東北本線", "東海道本線"],
+    # 武蔵野線 trains run onto 京葉線 to 海浜幕張/東京; suki tags those keys
+    # 京葉線, so the 武蔵野線 pool alone never contains the reported tail.
+    "JR-East.Musashino": ["武蔵野線", "京葉線"],
+    # 横須賀線 trains continue onto 総武快速 (大船→津田沼), and suki tags that
+    # through-run pattern 東海道本線+総武本線 rather than 横須賀線.
+    "JR-East.Yokosuka": ["横須賀線", "総武本線", "東海道本線"],
 }
 
 
@@ -161,6 +167,10 @@ def fetch(src, files=None):
                 "cars": (t.get("cars") or {}).get("value"),
                 "upcoming": [r["name"] for r in remaining],
                 "official": official,
+                # cloudrail's remaining-stop list stops at the JR boundary
+                # (埼京線->新木場, 常磐線各停->小田急): let the resolver accept
+                # a candidate that continues past it, prefix + dest still tie it.
+                "max_extra": None,
                 "suki_pools": POOL_OVERRIDES.get(
                     meta["railway"], meta.get("pools") or [meta["suki"]]
                 ),

@@ -19,6 +19,7 @@ _st.json), resolved to a name here; the baker then pins the suki run with the
 same resolver delay uses.
 """
 
+import datetime
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -27,22 +28,60 @@ from baker import common
 BASE = "https://www.train-guide.westjr.co.jp/api/v3"
 AREAS = ["kinki", "hokuriku", "okayama", "hiroshima", "sanin"]
 
-# Same suki-side names delay uses; the site's timetable keys are the official
-# 本線 names, while train-guide markets the services (JR京都線, 大和路線...).
-LINE_NAME_REWRITES = {
-    "JR京都線": "東海道本線",
-    "JR神戸線・山陽線": "山陽本線",
-    "山陽線": "山陽本線",
-    "JR宝塚線・福知山線": "福知山線",
-    "JR宝塚線": "福知山線",
-    "大和路線": "関西本線",
-    "学研都市線": "片町線",
-    "北陸線・琵琶湖線": "北陸本線",
-    "山陰線": "山陰本線",
-    "きのくに線": "紀勢本線",
-    "万葉まほろば線": "桜井線",
-    "JRゆめ咲線": "桜島線",
-    "阪和線・羽衣線": "阪和線",
+# train-guide markets services (JR京都線, 大和路線...) while jr.suki.ing keys
+# are tagged with the physical lines. Through-running is the norm in Kansai:
+# a 新快速 野洲→姫路 is filed under JR京都線 but its suki key carries both
+# 東海道本線 and 山陽本線, and a はるか 関西空港→京都 crosses four of them.
+# So each service maps to every physical line its route can touch; the
+# resolver still requires a unique run in the time window with a matching
+# terminal and stop sequence, so a wider pool only adds candidates.
+LINE_POOLS = {
+    "JR京都線": ["東海道本線", "山陽本線"],
+    "JR神戸線・山陽線": ["山陽本線", "東海道本線"],
+    "山陽線": ["山陽本線", "東海道本線"],
+    "JR宝塚線・福知山線": ["福知山線", "東海道本線"],
+    "JR宝塚線": ["福知山線", "東海道本線"],
+    "大和路線": ["関西本線", "大阪環状線"],
+    "学研都市線": ["片町線", "大阪環状線", "おおさか東線"],
+    "北陸線・琵琶湖線": ["北陸本線", "東海道本線", "湖西線"],
+    "山陰線": ["山陰本線"],
+    "嵯峨野線": ["山陰本線"],
+    "きのくに線": ["紀勢本線", "阪和線"],
+    "万葉まほろば線": ["桜井線", "関西本線"],
+    "JRゆめ咲線": ["桜島線", "大阪環状線"],
+    "阪和線・羽衣線": ["阪和線", "大阪環状線", "東海道本線"],
+    "阪和線": ["阪和線", "大阪環状線", "東海道本線"],
+    "大阪環状線": ["大阪環状線", "阪和線", "関西本線", "桜島線", "おおさか東線"],
+    "関西空港線": ["関西空港線", "阪和線", "大阪環状線", "東海道本線"],
+    "関西線": ["関西本線", "大阪環状線"],
+    "奈良線": ["jr奈良線", "関西本線"],
+    "JR東西線": ["jr東西線", "片町線", "関西本線"],
+    "おおさか東線": ["おおさか東線", "関西本線", "片町線", "大阪環状線"],
+    "湖西線": ["湖西線", "東海道本線", "北陸本線"],
+    "福知山線": ["福知山線", "東海道本線"],
+    "東海道本線": ["東海道本線", "山陽本線", "湖西線", "北陸本線"],
+    "山陽本線": ["山陽本線", "東海道本線"],
+    "北陸本線": ["北陸本線", "東海道本線", "湖西線"],
+    "赤穂線": ["赤穂線", "山陽本線"],
+    "舞鶴線": ["舞鶴線", "山陰本線"],
+    "桜井線": ["桜井線", "関西本線"],
+    "和歌山線": ["和歌山線", "阪和線", "関西本線"],
+    "桜島線": ["桜島線", "大阪環状線"],
+    "片町線": ["片町線", "大阪環状線", "おおさか東線", "関西本線"],
+    "関西本線": ["関西本線", "大阪環状線"],
+    "草津線": ["草津線", "東海道本線"],
+    "播但線": ["播但線", "山陽本線"],
+    "姫新線": ["姫新線", "山陽本線"],
+    "因美線": ["因美線", "山陰本線"],
+    "伯備線": ["伯備線", "山陰本線", "山陽本線"],
+    "津山線": ["津山線", "山陽本線"],
+    "瀬戸大橋線": ["本四備讃線", "宇野線", "山陽本線"],
+    "宇野みなと線": ["宇野線", "山陽本線"],
+    "福塩線": ["福塩線", "山陽本線"],
+    "可部線": ["可部線", "山陽本線"],
+    "呉線": ["呉線", "山陽本線"],
+    "芸備線": ["芸備線", "山陽本線"],
+    "山口線": ["jr山口線", "山陽本線"],
 }
 
 FACILITIES = {1: "wheelchair", 2: "stroller", 3: "wifi", 4: "restroom", 5: "luggage"}
@@ -76,7 +115,14 @@ def _get(src, path):
 def _dest(raw):
     text = raw.get("text") if isinstance(raw, dict) else raw
     text = (text or "").strip()
-    return None if text in _DEST_IGNORE else text
+    # Composite destinations ("関西空港/和歌山方面", "福知山／東舞鶴") name two
+    # possible terminals and the actual one varies per run; "方面" is a
+    # direction, not a stop. Treating either as a terminal rejects every
+    # candidate. Unknown is safe - time window + stop sequence + uniqueness
+    # still have to agree.
+    if not text or text in _DEST_IGNORE or "方面" in text or "/" in text or "／" in text:
+        return None
+    return text
 
 
 def _car_no(car):
@@ -170,23 +216,58 @@ def fetch(src, index=None):
         block = _block(monitor.get(number))
         if not block:
             continue
-        at = pos.split("_")[0]
-        station = names.get(slug, {}).get(at)
-        if not station:
+        a_code, _, b_code = pos.partition("_")
+        station_names = names.get(slug, {})
+        a_name = station_names.get(a_code)
+        if not a_name:
             continue
+        # pos is "<last called>_<adjacent>", but the adjacent code is the
+        # *next* station only on down trains (direction=1). Up trains
+        # (direction=0) report the station behind, so the train just left B
+        # and is heading to A - verified against the timetable: dir1 anchors
+        # matched A 32/36, dir0 anchors matched B 21/21 with A at 0.
+        if b_code and not b_code.startswith("#") and t.get("direction") == 0:
+            b_name = station_names.get(b_code)
+            if not b_name:
+                continue
+            station, next_station = b_name, a_name
+        else:
+            station = a_name
+            next_station = station_names.get(b_code) if b_code and not b_code.startswith("#") else None
+        # stopTime is the absolute moment the train stopped at the station it
+        # last called at (the anchor above), server JST stored in UTC; it
+        # identifies the run without any wall-clock drift.
+        stop_min = None
+        stamp = t.get("stopTime")
+        if stamp:
+            try:
+                dt = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                jst = dt.astimezone(datetime.timezone(datetime.timedelta(hours=9)))
+                stop_min = jst.hour * 60 + jst.minute
+            except ValueError:
+                pass
         raw_name = slugs.get(slug, slug)
-        line = LINE_NAME_REWRITES.get(raw_name, raw_name)
+        pools = LINE_POOLS.get(raw_name, [raw_name])
+        line = pools[0]
         out.append({
             "op": "JR-West",
             "line": line,
             "railway": f"JR-West.{slug}",
             "number": number,
             "type": t.get("displayType") or None,
+            "direction": t.get("direction"),
             "from": station,
+            "next": next_station,
+            "stop": stop_min,
             "to": _dest(t.get("dest")),
             "cars": t.get("numberOfCars"),
             "official": None,
-            "pools": [line],
+            # The position record carries the train's own delay, which the
+            # resolver subtracts from `now` to recover when the run was
+            # scheduled to pass the reported station. Without it every train
+            # that left the station more than 3 minutes ago misses the window.
+            "delay_min": int(t.get("delayMinutes") or 0),
+            "pools": pools,
             "comfort": block,
         })
     return out
