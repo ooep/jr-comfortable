@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # chain the next bake from this run (GITHUB_TOKEN)
 
 concurrency:
   group: bake-comfort
@@ -78,3 +79,22 @@ jobs:
             # only means the CDN serves the previous snapshot for a while.
             curl -sS --max-time 20 "https://purge.jsdelivr.net/gh/ooep/jr-comfortable@main/data/comfort.json" > /dev/null || true
           fi
+
+      # GitHub's `schedule` is heavily throttled (a handful of runs a day, and
+      # on a fresh repository it can stay silent for hours), while the site
+      # drops comfort data older than 45 minutes. Each run therefore queues the
+      # next one, which keeps a ~10-minute cadence. One runner at a time
+      # (concurrency group), and public-repo minutes are not billed. `always()`
+      # keeps the chain alive after a failed bake; the cron entries above stay
+      # as a cold-start backstop when the chain has been stopped.
+      - name: Chain next run (10 min)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 540
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/bake.yml/dispatches" \
+            -d '{"ref":"main"}'
