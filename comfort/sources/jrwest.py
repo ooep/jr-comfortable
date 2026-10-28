@@ -88,23 +88,25 @@ def _car_no(car):
 
 def _block(groups):
     """Coupled car sets -> flat per-car arrays + a train-level summary."""
+    # The feed lists cars in coupler order (7,6,5,4 for a rear set) and the
+    # coupled sets in either order (4634C: 7..4 then 3..1, 4653C: 1..3 then
+    # 4..7). The drawer draws one bar per car left to right, so sort all cars
+    # of the formation by car number, not per set.
+    cars = [car for group in groups or [] for car in group.get("cars") or []]
     cong, temp, facilities = [], [], set()
-    for group in groups or []:
-        # The feed lists cars in coupler order (4,3,2,1 for a 4-car set); the
-        # drawer draws one bar per car left to right, so sort by car number.
-        for car in sorted(group.get("cars") or [], key=_car_no):
-            if car.get("status") != 1:
-                cong.append(None)
-                temp.append(None)
-                continue
-            c = car.get("congestion")
-            cong.append(c if isinstance(c, int) and c >= 0 else None)
-            t = car.get("temp")
-            temp.append(t if isinstance(t, int) and 0 <= t <= 50 else None)
-            for code in car.get("facilities") or []:
-                name = FACILITIES.get(code)
-                if name:
-                    facilities.add(name)
+    for car in sorted(cars, key=_car_no):
+        if car.get("status") != 1:
+            cong.append(None)
+            temp.append(None)
+            continue
+        c = car.get("congestion")
+        cong.append(c if isinstance(c, int) and c >= 0 else None)
+        t = car.get("temp")
+        temp.append(t if isinstance(t, int) and 0 <= t <= 50 else None)
+        for code in car.get("facilities") or []:
+            name = FACILITIES.get(code)
+            if name:
+                facilities.add(name)
     known = [c for c in cong if c is not None]
     temps = [t for t in temp if t is not None]
     block = {}
