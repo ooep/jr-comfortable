@@ -33,8 +33,8 @@ are running late; comfort looks at every train carrying a reading.
 | Source | Fields | Notes |
 |---|---|---|
 | JR-East (cloudrail, official app) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings |
-| Osaka Metro | per-car congestion + temperature | next |
-| JR-West | congestion / temperature / accessibility | official service exists, detail API not yet located |
+| Osaka Metro | per-car congestion + temperature | all 9 lines, official app data |
+| JR-West | per-car congestion, temperature, facilities | Kinki/Hokuriku/Okayama/Hiroshima/Sanin; train-guide `trainmonitorinfo.json` (congestion %, °C, wheelchair/stroller/Wi-Fi/restroom/luggage per car) |
 
 ## Output
 

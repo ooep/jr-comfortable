@@ -30,7 +30,7 @@ if _delay_dir and _delay_dir not in sys.path:
 from baker import common, holidays, suki, suki_timetable  # noqa: E402
 from baker.delays import resolve_direct_by_time  # noqa: E402
 
-from comfort.sources import jreast, osakametro  # noqa: E402
+from comfort.sources import jreast, jrwest, osakametro  # noqa: E402
 
 
 def _calendar_day(now):
@@ -92,6 +92,7 @@ def bake(delay_dir, out_dir, files=None):
     for name, pull in (
         ("jreast", lambda: jreast.fetch(src, files)),
         ("osakametro", lambda: osakametro.fetch(src, index)),
+        ("jrwest", lambda: jrwest.fetch(src, index)),
     ):
         try:
             got = pull()
