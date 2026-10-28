@@ -73,4 +73,8 @@ jobs:
               echo "push retry $i"
               sleep 5
             done
+            # the site reads via jsDelivr (@main caches for hours); a purge
+            # keeps the 10-minute cadence visible. Best effort - a failure
+            # only means the CDN serves the previous snapshot for a while.
+            curl -sS --max-time 20 "https://purge.jsdelivr.net/gh/ooep/jr-comfortable@main/data/comfort.json" > /dev/null || true
           fi
