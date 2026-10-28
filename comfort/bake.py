@@ -21,6 +21,7 @@ import json
 import os
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 _delay_dir = os.environ.get("DELAY_DIR")
@@ -211,17 +212,29 @@ def bake(delay_dir, out_dir, files=None):
     print(f"suki index: {len(index.trains)} keys; timetable runs: {len(stt.runs)} ({stt.source_file})")
 
     src = common.Source()
-    raw = []
-    for name, pull in (
+    pulls = (
         ("jreast", lambda: jreast.fetch(src, files)),
         ("osakametro", lambda: osakametro.fetch(src, index)),
         ("jrwest", lambda: jrwest.fetch(src, index)),
         ("tokyometro", lambda: tokyometro.fetch(src, index, stt, now)),
-    ):
+    )
+
+    def _pull(item):
+        name, fn = item
         try:
-            got = pull()
+            return name, fn(), None
         except Exception as exc:  # noqa: BLE001 - fail closed per source
-            print(f"{name} comfort fetch failed: {type(exc).__name__}: {str(exc)[:160]}")
+            return name, [], f"{type(exc).__name__}: {str(exc)[:160]}"
+
+    # Four different operators, so running them side by side adds no
+    # concurrency to any single host - it just stops the slow one (Tokyo
+    # Metro's chart pages) from waiting behind the other three.
+    with ThreadPoolExecutor(max_workers=len(pulls)) as ex:
+        results = list(ex.map(_pull, pulls))
+    raw = []
+    for name, got, err in results:
+        if err:
+            print(f"{name} comfort fetch failed: {err}")
             continue
         print(f"{name} comfort candidates: {len(got)}")
         raw.extend(got)

@@ -237,29 +237,25 @@ def _station_lines(index):
     return out
 
 
-def _lookup(index, stt, pool, want, wantd, minute, tol, wanto=None):
+def _lookup(entries, wantd, minute, tol, wanto=None):
     hits = []
-    for key in pool:
-        stops = [_base(s) for s in index._stops_norm[key]]
+    for key, stops, deps in entries:
         if not _term_ok(stops[-1], wantd):
             continue
         if wanto is not None and stops[0] != wanto:
             continue
-        idx = _anchor_idx(stops, want)
-        if idx is None:
-            continue
-        near = [(abs(dep - minute), dep0) for dep, dep0 in _deps(stt, key, idx)
+        near = [(abs(dep - minute), dep0) for dep, dep0 in deps
                 if abs(dep - minute) <= tol]
         if len(near) > 1:
             if wanto is None:
                 return None  # a pattern runs twice in the window: row is unprovable
             continue
         if len(near) == 1:
-            hits.append((near[0][0], key, near[0][1]))
+            hits.append((near[0][0], key, near[0][1], stops[0]))
     return hits
 
 
-def _match(index, stt, lines, station, minute, dest, origin):
+def _match(index, entries, minute, dest, origin):
     """(suki key, run origin minute, key lines, clock gap) for one departure.
 
     Metro-native segments match the timetable to the minute (pass 1). Runs
@@ -268,33 +264,31 @@ def _match(index, stt, lines, station, minute, dest, origin):
     published clock; that wider window is opened only for patterns whose own
     first stop is the row's 始発 station, which is what keeps the row
     attributable (pass 2).
+
+    `entries` is the page's precomputed [(key, stops, deps)]; every row on a
+    page shares the same anchor station and candidate pool, so rebuilding it
+    per row (and resumming each pattern's run times) was 10x the work.
     """
-    want = _base(station)
     wantd = _base(dest)
     wanto = _base(origin)
-    pool = {}
-    for line in lines:
-        for cand in index.match_direct(line, want, None, None, top=256) or []:
-            pool[str(cand["key"])] = cand
 
     def pick(hits):
         if not hits:
             return None
-        exact = [h for h in hits
-                 if _base(index._stops_norm[h[1]][0]) == wanto]
+        exact = [h for h in hits if h[3] == wanto]
         if exact:
             hits = exact
         best = min(h[0] for h in hits)
         winners = [h for h in hits if h[0] == best]
         if len(winners) != 1:
             return None
-        gap, key, dep0 = winners[0]
+        gap, key, dep0, _first = winners[0]
         return key, dep0, index.trains[key].get("lines") or [], gap
 
-    got = pick(_lookup(index, stt, pool, want, wantd, minute, 1))
+    got = pick(_lookup(entries, wantd, minute, 1))
     if got:
         return got
-    return pick(_lookup(index, stt, pool, want, wantd, minute, 3, wanto))
+    return pick(_lookup(entries, wantd, minute, 3, wanto))
 
 
 def _page(src, route, code, direction, day_type):
@@ -388,9 +382,39 @@ def fetch(src, index, stt, now):
         got = _page(src, route, code, direction, day_type)
         return job, got
 
+    # A chart page takes 5-8s to answer, so the fetch window is dominated by
+    # how many we ask for at once. Ten keeps the fan-out modest (this is a
+    # public web frontend, not an API) while halving the wall time of six.
     out = []
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         pages = list(pool.map(one, jobs))
+
+    stops_cache, deps_cache, entries_cache = {}, {}, {}
+
+    def entries_for(want, lines):
+        sig = (want, tuple(lines))
+        ent = entries_cache.get(sig)
+        if ent is not None:
+            return ent
+        pool = {}
+        for line in lines:
+            for cand in index.match_direct(line, want, None, None, top=256) or []:
+                pool[str(cand["key"])] = cand
+        ent = []
+        for key in pool:
+            stops = stops_cache.get(key)
+            if stops is None:
+                stops = stops_cache[key] = [_base(s) for s in index._stops_norm[key]]
+            idx = _anchor_idx(stops, want)
+            if idx is None:
+                continue
+            deps = deps_cache.get((key, idx))
+            if deps is None:
+                deps = deps_cache[(key, idx)] = _deps(stt, key, idx)
+            ent.append((key, stops, deps))
+        entries_cache[sig] = ent
+        return ent
+
     for (route, line, code, direction), got in pages:
         if not got or not got[0]:
             continue
@@ -398,14 +422,14 @@ def fetch(src, index, stt, now):
         rows = _rows(text)
         actual = _actual_levels(text, len(rows), now)
         name = route["stations"].get(code, code)
+        entries = entries_for(_base(name), station_lines.get(_base(name)) or [line])
         picked = []
         in_window = 0
         for i, row in enumerate(rows):
             if not (lo <= row["minute"] <= hi) or row["minute"] >= 1440:
                 continue
             in_window += 1
-            hit = _match(index, stt, station_lines.get(_base(name)) or [line],
-                         name, row["minute"], row["dest"], row["origin"])
+            hit = _match(index, entries, row["minute"], row["dest"], row["origin"])
             if hit:
                 picked.append((i, row) + hit)
 
