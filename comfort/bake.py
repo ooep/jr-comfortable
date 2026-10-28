@@ -20,7 +20,7 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -29,7 +29,7 @@ if _delay_dir and _delay_dir not in sys.path:
     sys.path.insert(0, _delay_dir)
 
 from baker import common, holidays, suki, suki_timetable  # noqa: E402
-from baker.delays import resolve_direct_by_time  # noqa: E402
+from baker.delays import _stops_consistent, resolve_direct_by_time  # noqa: E402
 
 from comfort.sources import jreast, jrwest, osakametro, tokyometro  # noqa: E402
 
@@ -78,7 +78,7 @@ def _station_index(stops_n, want):
     )
 
 
-def _resolved(index, cand, dep0):
+def _resolved(index, cand, dep0, tier=None, gap=None):
     stops = index.trains[str(cand["key"])]["s_jas"]
     c2 = dict(cand)
     c2["size"] = len(stops)
@@ -89,7 +89,33 @@ def _resolved(index, cand, dep0):
             "origin": stops[0],
             "stops": stops,
         },
+        "tier": tier,
+        "gap": gap,
+        "dep0": dep0,
     }
+
+
+def _next_must_stop(rec):
+    """True when the reported next station has to be a stop of the pattern.
+
+    A 新快速 legitimately passes the station the sign names as next, so the
+    resolvers tolerate its absence - but that same tolerance let 環状線 1485
+    (西九条→弁天町, 普通) claim the 西九条→桜島 ゆめ咲線 pattern, where 弁天町
+    is not even on the line. An all-stops train has no such excuse.
+    """
+    if rec.get("op") != "JR-West":
+        return False
+    train_type = rec.get("type") or ""
+    return any(k in train_type for k in ("普通", "各駅停車", "各停"))
+
+
+def _next_forward(stops_n, idx, want_next, must_stop):
+    """Feed's next station vs the pattern: forward stop, or absent-but-allowed."""
+    if want_next is None:
+        return True
+    if want_next in stops_n:
+        return stops_n.index(want_next) > idx
+    return not must_stop
 
 
 def _resolve_stoptime(index, stt, rec, tol=3):
@@ -109,26 +135,30 @@ def _resolve_stoptime(index, stt, rec, tol=3):
     want = suki.norm_station(rec["from"])
     want_next = suki.norm_station(rec["next"]) if rec.get("next") else None
     want_dest = suki.norm_station(rec["to"]) if rec.get("to") else None
+    must_stop = _next_must_stop(rec)
     hits = []
     for c in _candidates(index, rec):
         key = str(c["key"])
         stops_n = index._stops_norm[key]
-        if want_dest and stops_n and stops_n[-1] != want_dest:
-            continue
         idx = _station_index(stops_n, want)
         if idx is None:
             continue
+        if want_dest and stops_n and stops_n[-1] != want_dest:
+            continue
         # The feed's "last station -> next station" pair must be a forward
         # move on this pattern (an express may skip the next station).
-        if want_next is not None and want_next in stops_n and stops_n.index(want_next) <= idx:
+        if not _next_forward(stops_n, idx, want_next, must_stop):
             continue
         for arr, dep, dep0 in stt.stop_times(key, stops_n, stops_n[idx]) or []:
-            if abs(arr - est) <= tol or abs(dep - est) <= tol:
-                hits.append((key, c, dep0))
+            g = min(abs(arr - est), abs(dep - est))
+            if g <= tol:
+                hits.append((key, c, dep0, g))
     if len({(h[0], h[2]) for h in hits}) != 1:
         return None
-    key, cand, dep0 = hits[0]
-    return _resolved(index, cand, dep0)
+    key, cand, dep0, g = min(hits, key=lambda h: h[3])
+    # tier 0: the train's own stopTime is an absolute clock, so the disagreement
+    # with the timetable is a minute-level measurement, not an inference.
+    return _resolved(index, cand, dep0, tier=0, gap=g)
 
 
 def _resolve_interval(index, stt, rec, now):
@@ -146,14 +176,17 @@ def _resolve_interval(index, stt, rec, now):
     want = suki.norm_station(rec["from"])
     want_next = suki.norm_station(next_station)
     want_dest = suki.norm_station(rec["to"]) if rec.get("to") else None
+    must_stop = _next_must_stop(rec)
     hits = []
     for c in _candidates(index, rec):
         key = str(c["key"])
         stops_n = index._stops_norm[key]
-        if want_dest and stops_n and stops_n[-1] != want_dest:
-            continue
         idx = _station_index(stops_n, want)
         if idx is None or idx + 1 >= len(stops_n):
+            continue
+        if want_dest and stops_n and stops_n[-1] != want_dest:
+            continue
+        if not _next_forward(stops_n, idx, want_next, must_stop):
             continue
         # An express may skip the adjacent station; the next scheduled stop is
         # still a valid (looser) upper bound for "has not arrived there yet".
@@ -170,34 +203,188 @@ def _resolve_interval(index, stt, rec, now):
     if len(hits) != 1:
         return None
     key, cand, dep0 = hits[0]
-    return _resolved(index, cand, dep0)
+    # tier 1: the interval [表定発車A, 表定到着B] is a physical bound but not a
+    # clock reading, so it is weaker evidence than a stopTime match.
+    return _resolved(index, cand, dep0, tier=1)
+
+
+def _by_dest(index):
+    """last normalised stop -> keys.
+
+    Each line advertises a pool of stop patterns, and for JR-West those pools
+    stop at the line the service is named after: a 特急こうか 白浜行き is
+    published under 阪和線, whose patterns all end at 和歌山 or 天王寺, so the
+    printed terminus is not the last stop of any candidate and the destination
+    test kills all of them. Indexing every pattern by its own last stop lets
+    the terminus - the strongest thing the feed says - find the run itself.
+    """
+    out = defaultdict(list)
+    for key, stops in index._stops_norm.items():
+        if not stops:
+            continue
+        last = stops[-1]
+        out[last].append(key)
+        # 関西空港(鉄道) / 大宮(埼玉県): the feed prints the bare name, so the
+        # qualifier must not decide whether the scan looks at all.
+        bare = last.split("(")[0]
+        if bare != last:
+            out[bare].append(key)
+    return out
+
+
+def _resolve_destscan(index, by_dest, stt, rec, now, tol=3):
+    """Pin by the reported terminus across every pattern, ignoring line pools.
+
+    Weaker than the pool resolvers in one way (it never saw the operator's
+    line name) and stronger in the rest: the pattern must end exactly where
+    the sign says the train goes, must contain the reported station ahead of
+    nothing else, keep the reported next station forward, and be the only run
+    in the window. Two different trains with the same terminus passing the
+    same station within three minutes is refused - which is exactly why this
+    runs last instead of instead of the pool tests.
+    """
+    if not rec.get("to"):
+        return None
+    official = rec.get("official") or {}
+    est, tier = None, 2
+    if rec.get("stop") is not None:
+        est, tier = rec["stop"] - (rec.get("delay_min") or 0), 0
+    elif official.get("departure") is not None:
+        est, tier = official["departure"], 0
+    if est is None:
+        est = now.hour * 60 + now.minute - (rec.get("delay_min") or 0)
+    want = suki.norm_station(rec["from"])
+    want_dest = suki.norm_station(rec["to"])
+    want_next = suki.norm_station(rec["next"]) if rec.get("next") else None
+    must_stop = _next_must_stop(rec)
+    hits = []
+    keys = by_dest.get(want_dest) or by_dest.get(want_dest.split("(")[0]) or []
+    for key in keys:
+        stops_n = index._stops_norm[key]
+        idx = _station_index(stops_n, want)
+        # The scan's only discriminator is "what still lies ahead", so a record
+        # reported at the pattern's own last stop proves nothing: with no
+        # future stops, every pattern sharing that terminus agrees with it.
+        if idx is None or idx + 1 >= len(stops_n):
+            continue
+        if not _next_forward(stops_n, idx, want_next, must_stop):
+            continue
+        if rec.get("official") and not _stops_consistent(
+                stops_n, stops_n[idx], rec["official"], rec.get("max_extra", 1)):
+            continue
+        for arr, dep, dep0 in stt.stop_times(key, stops_n, stops_n[idx]) or []:
+            g = min(abs(arr - est), abs(dep - est))
+            if g <= tol:
+                hits.append((key, dep0, g))
+    if len({(h[0], h[1]) for h in hits}) != 1:
+        return None
+    key, dep0, g = min(hits, key=lambda h: h[2])
+    return _resolved(index, {"key": key}, dep0, tier=tier, gap=g)
 
 
 def _resolve(index, stt, rec, now):
     direct = _candidates(index, rec)
     if not direct:
         return None
-    # JR-East passes the official clock, so delay_min is unused there; JR-West
-    # has no official stop times but its position feed carries delayMinutes,
-    # which shifts `now` back onto the scheduled departure of the reported
-    # station exactly like delay's own mapping does.
+    dest = rec.get("to")
+    if rec.get("official") is None and rec.get("next"):
+        # Same next-station rule the JR-West interval resolvers use: delay's
+        # strict resolver only cross-checks the stop list when the operator
+        # publishes one, so an all-stops train could otherwise land on a
+        # pattern that never calls its reported next station.
+        must_stop = _next_must_stop(rec)
+        want_next = suki.norm_station(rec["next"])
+        want = suki.norm_station(rec["from"])
+        keep = []
+        for c in direct:
+            stops_n = index._stops_norm[str(c["key"])]
+            idx = _station_index(stops_n, want)
+            if idx is not None and not _next_forward(stops_n, idx, want_next, must_stop):
+                continue
+            keep.append(c)
+        direct = keep
+    # JR-East passes the operator's own clock, so delay_min is unused there;
+    # JR-West has no official stop times but its position feed carries
+    # delayMinutes, which shifts `now` back onto the scheduled departure of
+    # the reported station exactly like delay's own mapping does.
     ok = resolve_direct_by_time(
         stt, index, direct, rec["from"], now, rec.get("delay_min") or 0,
-        rec["type"], official=rec.get("official"), dest=rec.get("to"),
+        rec["type"], official=rec.get("official"), dest=dest,
         max_extra=rec.get("max_extra", 1),
     )
     if ok or rec.get("official") is None:
-        return ok
+        return _tag_strict(index, stt, rec, ok, now)
     # The operator's own clock is exact to the minute (drift vs suki observed
     # at 0-1 min), but rush-hour headways put several stop patterns inside the
     # ±3 window, which the ambiguity rule then rejects. Retrying at ±1 asks
     # the sharper question - which single (pattern, run) departs this station
     # at the announced minute - and stays silent when two of them do.
-    return resolve_direct_by_time(
+    return _tag_strict(index, stt, rec, resolve_direct_by_time(
         stt, index, direct, rec["from"], now, rec.get("delay_min") or 0,
-        rec["type"], official=rec.get("official"), dest=rec.get("to"),
+        rec["type"], official=rec.get("official"), dest=dest,
         max_extra=rec.get("max_extra", 1), tol=1,
-    )
+    ), now)
+
+
+def _tag_strict(index, stt, rec, ok, now):
+    """Attach the evidence tier and the clock disagreement to a strict match.
+
+    tier 0 means the operator itself announced the minute the train leaves the
+    reported station (cloudrail's planDeparture); tier 2 means only the wall
+    clock minus the reported delay was available, which every other train on
+    the line shares. Slot arbitration uses both.
+    """
+    if ok is None:
+        return None
+    official = rec.get("official") or {}
+    est = official.get("departure")
+    tier = 0 if est is not None else 2
+    if est is None:
+        est = now.hour * 60 + now.minute - (rec.get("delay_min") or 0)
+    key = str(ok["cand"]["key"])
+    stops_n = index._stops_norm[key]
+    want = suki.norm_station(rec["from"])
+    anchor = want if want in stops_n else next(
+        (s for s in stops_n
+         if s.startswith(want) and s[len(want):].endswith(("都", "道", "府", "県"))), None)
+    dep0 = int(ok["scheduled"]["dep"][:2]) * 60 + int(ok["scheduled"]["dep"][3:])
+    gap = None
+    if anchor is not None:
+        gap = next((abs(arr - est) for arr, d0 in
+                    stt.passage_times(key, stops_n, anchor) or [] if d0 == dep0), None)
+    return {**ok, "tier": tier, "gap": gap, "dep0": dep0}
+
+
+def _stages(index, by_dest, stt, rec, now):
+    """One full pass of every resolver, strongest anchor first.
+
+    The train's own stopTime is an absolute clock, so it goes first; the
+    [発車A, 到着B] interval is a physical bound and comes second; the wall-clock
+    strict resolver is the weakest and last of the pool tests. The destination
+    scan runs after all three - it is the only one that can reach a pattern the
+    line's own pool never lists, and it pays for that with a stricter
+    uniqueness rule.
+    """
+    got = _resolve_stoptime(index, stt, rec)
+    if got:
+        return got
+    # `est` is stopTime minus a whole-minute delay, so the true run is normally
+    # within a minute of it; when the ±3 window admits two patterns the tighter
+    # one separates them, and when it admits none nothing was lost.
+    got = _resolve_stoptime(index, stt, rec, tol=1)
+    if got:
+        return got
+    if rec.get("next"):
+        got = _resolve_interval(index, stt, rec, now)
+        if got:
+            return got
+    got = _resolve(index, stt, rec, now)
+    if got:
+        return got
+    got = _resolve_destscan(index, by_dest, stt, rec, now)
+    if got:
+        got["scanned"] = True
+    return got
 
 
 def bake(delay_dir, out_dir, files=None):
@@ -210,6 +397,7 @@ def bake(delay_dir, out_dir, files=None):
         print("suki timetable unavailable: refusing to bake (keys would be unverified)")
         return 2
     print(f"suki index: {len(index.trains)} keys; timetable runs: {len(stt.runs)} ({stt.source_file})")
+    by_dest = _by_dest(index)
 
     src = common.Source()
     pulls = (
@@ -239,8 +427,7 @@ def bake(delay_dir, out_dir, files=None):
         print(f"{name} comfort candidates: {len(got)}")
         raw.extend(got)
 
-    claimed = {}
-    trains = []
+    pending = []
     stats = Counter()
     misses = Counter()
     for rec in raw:
@@ -260,34 +447,51 @@ def bake(delay_dir, out_dir, files=None):
                     "origin": stops[0],
                     "stops": stops,
                 },
+                # Pinned against a published timetable row, not a time window:
+                # already the sharpest evidence a slot can have.
+                "tier": -1,
             }
         else:
-            resolved = _resolve_stoptime(index, stt, rec)
-            # `est` is stopTime minus a whole-minute delay, so the true run is
-            # normally within a minute of it. When the +/-3 min window admits
-            # two patterns, the tighter window is what separates them; when it
-            # admits none, nothing was lost.
-            if not resolved:
-                resolved = _resolve_stoptime(index, stt, rec, tol=1)
-            if not resolved and rec.get("next"):
-                resolved = _resolve_interval(index, stt, rec, now)
-            if not resolved and not rec.get("next"):
-                resolved = _resolve(index, stt, rec, now)
+            resolved = _stages(index, by_dest, stt, rec, now)
+            if resolved and resolved.get("scanned"):
+                stats["dest_scan"] += 1
         if not resolved:
             stats["unresolved"] += 1
             misses[rec["line"]] += 1
             continue
-        key = str(resolved["cand"]["key"])
         # A suki key is a stop *pattern*, reused by many runs of the day
         # (中央線快速 runs every few minutes share one). Two live trains on
         # the same key are fine as long as their origin departure differs -
         # that minute is exactly what jr.suki.ing filters trips by. Only a
         # same-key same-departure pair is a genuine collision.
-        slot = (key, resolved["scheduled"]["dep"])
-        if slot in claimed:
-            stats["key_collision"] += 1
-            continue
-        claimed[slot] = rec.get("number") or rec.get("vehicle") or ""
+        slot = (str(resolved["cand"]["key"]), resolved["scheduled"]["dep"])
+        pending.append((slot, rec, resolved))
+
+    # Two live trains that both pin to one (pattern, departure minute) cannot
+    # both be that run, and which one wins must not depend on the order the
+    # sources happened to return. Keep a single claimant only when its evidence
+    # is strictly sharper - the train's own clock agreeing to the minute beats
+    # a neighbour that needed the ±3 window - and otherwise report neither.
+    def _strength(resolved):
+        gap = resolved.get("gap")
+        return (resolved.get("tier", 0), 99 if gap is None else gap)
+
+    groups = defaultdict(list)
+    for slot, rec, resolved in pending:
+        groups[slot].append((rec, resolved))
+    trains = []
+    for group in groups.values():
+        contested = len(group) > 1
+        if contested:
+            best = min(group, key=lambda g: _strength(g[1]))
+            if sum(1 for g in group if _strength(g[1]) == _strength(best[1])) != 1:
+                stats["key_collision"] += len(group)
+                continue
+            stats["collision_won"] += len(group) - 1
+            rec, resolved = best
+        else:
+            rec, resolved = group[0]
+        key, dep = (str(resolved["cand"]["key"]), resolved["scheduled"]["dep"])
         entry = {
             "op": rec["op"],
             "line": rec["line"],
@@ -307,6 +511,16 @@ def bake(delay_dir, out_dir, files=None):
         }
         if rec.get("vehicle"):
             entry["vehicle"] = rec["vehicle"]
+        # Audit trail: a contested slot is the one mapping that can still be
+        # wrong (two live trains claimed the same run), so mark it and let a
+        # bad record be traced back to the rule that kept it.
+        ev = []
+        if contested:
+            ev.append("contested")
+        if resolved.get("scanned"):
+            ev.append("dest_scan")
+        if ev:
+            entry["ev"] = ev
         trains.append(entry)
         stats["matched"] += 1
 

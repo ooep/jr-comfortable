@@ -41,6 +41,16 @@ LINES = {
     "9": ("南港ポートタウン線", "OsakaMetro.NewTram", "コスモスクエア", 9),
 }
 
+# trainCarCongestionList/trainCarTemperatureList always carry ten slots, so a
+# 6-car 中央線 row ends in ",0,0,0,0". 0 is a *valid* congestion reading on the
+# other line (空席あり), so it cannot be filtered as a sentinel; the list has
+# to be cut to the formation. Lengths are the official SPA's own
+# trainCarDetail.json InteriorListA/B (both directions are car_number_1..N,
+# which also proves index 0 = 1号車), checked 2026-10-28. A line missing here
+# keeps its raw list rather than guessing a length.
+CARS = {"1": 10, "4": 6}
+
+
 # Crowding grade for the drawer's three colours, from the per-car max rate.
 # Osaka Metro's own app paints cars by percentage; the site's chip only has
 # three steps, so scale to them (>100% readings do occur at peak).
@@ -159,9 +169,12 @@ def _car_temps(raw):
     return out
 
 
-def _comfort(cong_raw, temp_raw):
+def _comfort(cong_raw, temp_raw, cars=None):
     cong = _car_ints(cong_raw)
     temp = _car_temps(temp_raw)
+    if cars:
+        cong = cong[:cars]
+        temp = temp[:cars]
     valid = [c for c in cong if c is not None]
     if not valid and not any(t is not None for t in temp):
         return None
@@ -198,7 +211,7 @@ def fetch(src, index, route_names=None):
         for t in trains:
             cong_raw = t.get("congestion") or ""
             temp_raw = t.get("temperature") or ""
-            block = _comfort(cong_raw, temp_raw)
+            block = _comfort(cong_raw, temp_raw, CARS.get(code))
             if not block:
                 continue
             prog = str(t.get("progress") or "")
