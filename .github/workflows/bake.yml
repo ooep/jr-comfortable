@@ -1,0 +1,76 @@
+name: bake-comfort
+
+# Per-train comfort data (congestion, and later temperature / accessibility)
+# pinned onto jr.suki.ing timetable keys.
+#
+#   cloudrail (JR-East official app feed) -> comfort/ sources -> data/comfort.json
+#
+# Mapping is delegated to ooep/delay, checked out as .delay: its match_direct +
+# resolve_direct_by_time are the same functions that produce delays.json, so a
+# comfort record lands on exactly the trip the delay record would.
+#
+# data/comfort.json is committed (static file, served by the same Workers
+# Static Assets pipeline as jr-delay) - this repo is a refreshed snapshot,
+# not a realtime stream.
+
+on:
+  schedule:
+    # 東京時間 05:00 - 次日 02:00 (JST = UTC+9); GitHub cron jitters 5-20 min
+    - cron: "*/10 20-23 * * *"
+    - cron: "*/10 0-16 * * *"
+    - cron: "0 17 * * *"    # 最後の一本: JST 02:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bake-comfort
+  cancel-in-progress: true
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DELAY_DIR: .delay
+    steps:
+      - uses: actions/checkout@v4
+
+      # mapping + the jr.suki.ing timetable snapshots (data/suki/*.json) live
+      # here; the site's own trains_wd/sa/su.json is the ground truth we
+      # resolve against, so it has to be the same copy delay bakes with.
+      - uses: actions/checkout@v4
+        with:
+          repository: ooep/delay
+          path: .delay
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bake comfort
+        run: python -m comfort.bake --delay-dir .delay --out data
+
+      # Re-checks every entry against trains_*.json with the site's own filter
+      # (key, origin departure minute, reported station on route). A failure
+      # aborts before the commit, so the last good snapshot stays live.
+      - name: Verify against jr.suki.ing timetable
+        run: python -m comfort.verify data/comfort.json --delay-dir .delay
+
+      - name: Commit if changed
+        run: |
+          git config user.name "baker[bot]"
+          git config user.email "baker@users.noreply.github.com"
+          git add data/comfort.json
+          if git diff --cached --quiet; then
+            echo "comfort unchanged"
+          else
+            git commit -m "comfort $(date -u +'%Y-%m-%dT%H:%MZ') $(python -c "import json;print(json.load(open('data/comfort.json'))['count'])") trains"
+            for i in 1 2 3 4 5; do
+              git pull --rebase --autostash && git push && break
+              echo "push retry $i"
+              sleep 5
+            done
+          fi
