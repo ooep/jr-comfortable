@@ -52,6 +52,15 @@ ANCHOR_OVERRIDES = {
     ("M", "B"): "honancho",
 }
 
+# 三田線 shares the 目黒—白金高輪 section with 南北線, so its trains appear on
+# 南北線 station pages.  Anchoring only on the direction's end (目黒) captured
+# the northbound side alone; the southbound runs leave 白金台 towards 目黒 and
+# are published only on that interior page.  These pages are read after the
+# anchors and only fill slots no anchor claimed.
+FILL_PAGES = {
+    ("N", "B"): ("白金台",),
+}
+
 # 5-day average / actual levels are 1-6; the drawer's chip has three shades.
 LINE_CODE = {"銀座線": "G", "丸ノ内線": "M", "日比谷線": "H", "東西線": "T",
              "千代田線": "C", "有楽町線": "Y", "半蔵門線": "Z", "南北線": "N",
@@ -375,10 +384,14 @@ def fetch(src, index, stt, now):
             continue
         for direction in ("A", "B"):
             code = _origin(route, direction)
-            jobs.append((route, line, code, direction))
+            jobs.append((route, line, code, direction, False))
+            fill = FILL_PAGES.get((route["code"], direction))
+            for fcode, ja in route["stations"].items() if fill else ():
+                if fcode != code and _base(ja) in fill:
+                    jobs.append((route, line, fcode, direction, True))
 
     def one(job):
-        route, line, code, direction = job
+        route, line, code, direction, _fill = job
         got = _page(src, route, code, direction, day_type)
         return job, got
 
@@ -415,7 +428,7 @@ def fetch(src, index, stt, now):
         entries_cache[sig] = ent
         return ent
 
-    for (route, line, code, direction), got in pages:
+    for (route, line, code, direction, is_fill), got in pages:
         if not got or not got[0]:
             continue
         text, url = got
@@ -463,7 +476,7 @@ def fetch(src, index, stt, now):
             if est:
                 comfort["congestion"]["est"] = True
             matched = _pick_line(key_lines, line)
-            out.append({
+            rec = {
                 "op": "東京都交通局" if matched.startswith("都営") else "東京メトロ",
                 "line": matched,
                 "railway": _railway(matched),
@@ -477,7 +490,10 @@ def fetch(src, index, stt, now):
                 "suki_key": key,
                 "scheduled_dep": dep0,
                 "source": url,
-            })
+            }
+            if is_fill:
+                rec["fill"] = True
+            out.append(rec)
             kept += 1
         print(f"tokyometro {route['name']} {direction} {code} {name}: "
               f"{in_window} rows in window, {kept} mapped, {len(drop)} contested")
@@ -486,12 +502,19 @@ def fetch(src, index, stt, now):
     # train can be listed on both. Same key and same origin departure is the
     # same run: keep it once when the readings agree, drop it when they do
     # not (the pages disagree about the level, so neither is trustworthy).
+    # A fill page only speaks for runs no anchor page saw: the same train
+    # inevitably reads differently at 白金台 and 目黒, so its reading must not
+    # veto the anchor's.
     by_slot = {}
     for rec in out:
         by_slot.setdefault((rec["suki_key"], rec["scheduled_dep"]), []).append(rec)
     final = []
     for recs in by_slot.values():
-        levels = {(r["comfort"]["congestion"]["level"], r["basis"]) for r in recs}
+        anchor = [r for r in recs if not r.get("fill")]
+        pool = anchor or recs
+        levels = {(r["comfort"]["congestion"]["level"], r["basis"]) for r in pool}
         if len(levels) == 1:
-            final.append(recs[0])
+            winner = dict(pool[0])
+            winner.pop("fill", None)
+            final.append(winner)
     return final
