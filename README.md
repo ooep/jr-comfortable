@@ -28,6 +28,14 @@ showing nothing.
 The difference from delay is the candidate set. Delay only looks at trains that
 are running late; comfort looks at every train carrying a reading.
 
+Tokyo Metro is the one source that does not go through
+`resolve_direct_by_time`: CrowdNavi publishes no remaining-stop list, which the
+resolver needs for its `official` path. It anchors on (station, scheduled
+departure, destination) instead, verifies the run against `SukiTimetable`, and
+drops a row whenever two rows of the same page claim the same run. The
+resulting key and origin departure are still the site's own, which is why the
+browser joins it the same way.
+
 ## Sources
 
 | Source | Fields | Notes |
@@ -35,6 +43,7 @@ are running late; comfort looks at every train carrying a reading.
 | JR-East (cloudrail, official app) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings |
 | Osaka Metro | per-car congestion + temperature | all 9 lines, official app data |
 | JR-West | per-car congestion, temperature, facilities | Kinki/Hokuriku/Okayama/Hiroshima/Sanin; train-guide `trainmonitorinfo.json` (congestion %, °C, wheelchair/stroller/Wi-Fi/restroom/luggage per car) |
+| Tokyo Metro (CrowdNavi) | `congestion.level` 1–6, `congestion.est` | all 9 lines + through services (東武/東急/JR); per-station 列車別混雑グラフ, no API key needed |
 
 ## Output
 
@@ -67,7 +76,10 @@ same basis as the site's `t.dep[0]`, which is how the browser tells two runs of
 the same tmap key apart. `by_suki_key` is therefore key -> list.
 
 `class` is the operator's crowding grade (1 roomy ... 3 crowded); `rate` is a
-percentage and may exceed 100.
+percentage and may exceed 100. Tokyo Metro publishes no percentage, so its
+records carry `level` (1-6) instead; `est: true` means today's measurement for
+that departure was not published yet and the value is the 5-day average, which
+the drawer labels "5日平均".
 
 ## Run locally
 

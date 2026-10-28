@@ -30,7 +30,7 @@ if _delay_dir and _delay_dir not in sys.path:
 from baker import common, holidays, suki, suki_timetable  # noqa: E402
 from baker.delays import resolve_direct_by_time  # noqa: E402
 
-from comfort.sources import jreast, jrwest, osakametro  # noqa: E402
+from comfort.sources import jreast, jrwest, osakametro, tokyometro  # noqa: E402
 
 
 def _calendar_day(now):
@@ -93,6 +93,7 @@ def bake(delay_dir, out_dir, files=None):
         ("jreast", lambda: jreast.fetch(src, files)),
         ("osakametro", lambda: osakametro.fetch(src, index)),
         ("jrwest", lambda: jrwest.fetch(src, index)),
+        ("tokyometro", lambda: tokyometro.fetch(src, index, stt, now)),
     ):
         try:
             got = pull()
@@ -108,7 +109,24 @@ def bake(delay_dir, out_dir, files=None):
     misses = Counter()
     for rec in raw:
         stats["candidates"] += 1
-        resolved = _resolve(index, stt, rec, now)
+        # Sources whose feed is anchored to a published timetable (Tokyo
+        # Metro) already picked the run themselves; their matcher lives in
+        # the source because delay's resolver needs an official stop list
+        # that CrowdNavi does not publish.
+        if rec.get("suki_key"):
+            key = str(rec["suki_key"])
+            stops = index.trains[key]["s_jas"]
+            dep0 = int(rec["scheduled_dep"])
+            resolved = {
+                "cand": {"key": key, "size": len(stops), "overlap": 1.0},
+                "scheduled": {
+                    "dep": f"{dep0 // 60:02d}:{dep0 % 60:02d}",
+                    "origin": stops[0],
+                    "stops": stops,
+                },
+            }
+        else:
+            resolved = _resolve(index, stt, rec, now)
         if not resolved:
             stats["unresolved"] += 1
             misses[rec["line"]] += 1
