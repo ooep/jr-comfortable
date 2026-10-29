@@ -31,7 +31,9 @@ if _delay_dir and _delay_dir not in sys.path:
 from baker import common, holidays, suki, suki_timetable  # noqa: E402
 from baker.delays import _stops_consistent, resolve_direct_by_time  # noqa: E402
 
-from comfort.sources import jreast, jrwest, osakametro, tokyometro  # noqa: E402
+from comfort.sources import (  # noqa: E402
+    jreast, jrwest, odakyu, osakametro, tokyometro,
+)
 
 
 def _calendar_day(now):
@@ -232,7 +234,7 @@ def _by_dest(index):
     return out
 
 
-def _resolve_destscan(index, by_dest, stt, rec, now, tol=3):
+def _resolve_destscan(index, by_dest, stt, rec, now, tol=3, allowed_lines=None):
     """Pin by the reported terminus across every pattern, ignoring line pools.
 
     Weaker than the pool resolvers in one way (it never saw the operator's
@@ -241,9 +243,20 @@ def _resolve_destscan(index, by_dest, stt, rec, now, tol=3):
     nothing else, keep the reported next station forward, and be the only run
     in the window. Two different trains with the same terminus passing the
     same station within three minutes is refused - which is exactly why this
-    runs last instead of instead of the pool tests.
+    runs last instead of the pool tests.
+
+    "Ignoring line pools" cannot mean ignoring the operator: a JR-West
+    関空快速 reported at 新今宮 shares terminus and one station with a Nankai
+    空港急行, and the Nankai pattern (なんば→関西空港, 天下茶屋/泉佐野…) is
+    otherwise the only run in the window. The candidate pattern must carry at
+    least one line name the operator itself reports in this bake. Genuine
+    rescues (八高線 trains keyed as 川越線, 中央本線 through runs) still pass,
+    because both names belong to the same operator's universe.
     """
     if not rec.get("to"):
+        return None
+    allowed = allowed_lines or set()
+    if not allowed:
         return None
     official = rec.get("official") or {}
     est, tier = None, 2
@@ -260,6 +273,8 @@ def _resolve_destscan(index, by_dest, stt, rec, now, tol=3):
     hits = []
     keys = by_dest.get(want_dest) or by_dest.get(want_dest.split("(")[0]) or []
     for key in keys:
+        if not allowed.intersection(index.trains[key].get("lines") or ()):
+            continue
         stops_n = index._stops_norm[key]
         idx = _station_index(stops_n, want)
         # The scan's only discriminator is "what still lies ahead", so a record
@@ -355,7 +370,7 @@ def _tag_strict(index, stt, rec, ok, now):
     return {**ok, "tier": tier, "gap": gap, "dep0": dep0}
 
 
-def _stages(index, by_dest, stt, rec, now):
+def _stages(index, by_dest, stt, rec, now, allowed_lines=None):
     """One full pass of every resolver, strongest anchor first.
 
     The train's own stopTime is an absolute clock, so it goes first; the
@@ -381,7 +396,8 @@ def _stages(index, by_dest, stt, rec, now):
     got = _resolve(index, stt, rec, now)
     if got:
         return got
-    got = _resolve_destscan(index, by_dest, stt, rec, now)
+    got = _resolve_destscan(index, by_dest, stt, rec, now,
+                           allowed_lines=allowed_lines)
     if got:
         got["scanned"] = True
     return got
@@ -402,6 +418,7 @@ def bake(delay_dir, out_dir, files=None):
     src = common.Source()
     pulls = (
         ("jreast", lambda: jreast.fetch(src, files)),
+        ("odakyu", lambda: odakyu.fetch(src, index, stt, now)),
         ("osakametro", lambda: osakametro.fetch(src, index)),
         ("jrwest", lambda: jrwest.fetch(src, index)),
         ("tokyometro", lambda: tokyometro.fetch(src, index, stt, now)),
@@ -414,9 +431,9 @@ def bake(delay_dir, out_dir, files=None):
         except Exception as exc:  # noqa: BLE001 - fail closed per source
             return name, [], f"{type(exc).__name__}: {str(exc)[:160]}"
 
-    # Four different operators, so running them side by side adds no
+    # Five different operators, so running them side by side adds no
     # concurrency to any single host - it just stops the slow one (Tokyo
-    # Metro's chart pages) from waiting behind the other three.
+    # Metro's chart pages) from waiting behind the other four.
     with ThreadPoolExecutor(max_workers=len(pulls)) as ex:
         results = list(ex.map(_pull, pulls))
     raw = []
@@ -430,6 +447,12 @@ def bake(delay_dir, out_dir, files=None):
     pending = []
     stats = Counter()
     misses = Counter()
+    # The operator's own line-name universe, used only by the destination
+    # scan to tell "same company, other pattern" from "other company's train".
+    op_lines = defaultdict(set)
+    for rec in raw:
+        if rec.get("op") and rec.get("line"):
+            op_lines[rec["op"]].add(rec["line"])
     for rec in raw:
         stats["candidates"] += 1
         # Sources whose feed is anchored to a published timetable (Tokyo
@@ -448,11 +471,16 @@ def bake(delay_dir, out_dir, files=None):
                     "stops": stops,
                 },
                 # Pinned against a published timetable row, not a time window:
-                # already the sharpest evidence a slot can have.
+                # already the sharpest evidence a slot can have. A source that
+                # can quantify how well its live clock agrees (Odakyu compares
+                # a whole run) passes that in, so two sources claiming one
+                # through service resolve towards the closer clock.
                 "tier": -1,
+                "gap": rec.get("gap"),
             }
         else:
-            resolved = _stages(index, by_dest, stt, rec, now)
+            resolved = _stages(index, by_dest, stt, rec, now,
+                               allowed_lines=op_lines.get(rec["op"]))
             if resolved and resolved.get("scanned"):
                 stats["dest_scan"] += 1
         if not resolved:

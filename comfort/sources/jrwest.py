@@ -225,7 +225,9 @@ def fetch(src, index=None):
         # *next* station only on down trains (direction=1). Up trains
         # (direction=0) report the station behind, so the train just left B
         # and is heading to A - verified against the timetable: dir1 anchors
-        # matched A 32/36, dir0 anchors matched B 21/21 with A at 0.
+        # matched A 32/36, dir0 anchors matched B 21/21 with A at 0. A
+        # same-data A/B (2026-10-28 20:19) re-confirmed the split: 154/202
+        # resolved with it vs 130/202 without, so do not "simplify" it away.
         if b_code and not b_code.startswith("#") and t.get("direction") == 0:
             b_name = station_names.get(b_code)
             if not b_name:
