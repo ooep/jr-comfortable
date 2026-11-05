@@ -1,0 +1,123 @@
+# jr-comfortable
+
+Per-train and per-car comfort data (congestion, in-car temperature, carriage
+facilities) for the trains already shown on [jr.suki.ing](https://jr.suki.ing),
+refreshed every 10 minutes by GitHub Actions.
+
+`data/comfort.json` is the whole product: each record is one live train, already
+pinned to the jr.suki.ing timetable key it will be drawn on, so the site needs
+no join logic of its own.
+
+## How a record gets its key
+
+The mapping is not re-invented here. `ooep/delay` already answers "which suki
+timetable key is this live train", and the site trusts that answer for delays.
+This repo checks the delay repository out next to it and calls the same two
+functions with the same anchors:
+
+1. `suki.SukiIndex.match_direct(line, reported_station, direction, type, top=256)`
+   — the candidate patterns for the line pool.
+2. `delays.resolve_direct_by_time(...)` — the feed's own planned clock plus the
+   feed's remaining stop sequence narrow the candidates to a single run.
+
+Uniqueness stays strict: a record is written only when exactly one run survives
+within ±3 minutes and its stop sequence agrees with the feed. Anything
+ambiguous is dropped — showing another train's crowding level is worse than
+showing nothing.
+
+The difference from delay is the candidate set. Delay only looks at trains that
+are running late; comfort looks at every train carrying a reading.
+
+Tokyo Metro is the one source that does not go through
+`resolve_direct_by_time`: CrowdNavi publishes no remaining-stop list, which the
+resolver needs for its `official` path. It anchors on (station, scheduled
+departure, destination) instead, verifies the run against `SukiTimetable`, and
+drops a row whenever two rows of the same page claim the same run. The
+resulting key and origin departure are still the site's own, which is why the
+browser joins it the same way.
+
+## Sources
+
+| Source | Fields | Notes |
+|---|---|---|
+| JR-East (cloudrail, official app) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings; the public app feed has no per-car or temperature fields |
+| Osaka Metro | per-car congestion + temperature | all 9 lines, official app data |
+| JR-West | per-car congestion, temperature, facilities | Kinki/Hokuriku/Okayama/Hiroshima/Sanin; train-guide `trainmonitorinfo.json` (congestion %, °C, wheelchair/stroller/Wi-Fi/restroom/luggage per car) |
+| Tokyo Metro (CrowdNavi) | `congestion.level` 1–6, `congestion.est` | all 9 lines + through services (東武/東急/JR); per-station 列車別混雑グラフ, no API key needed |
+| Toei (CrowdNavi pages) | `congestion.level` 1–6, `congestion.est` | only runs that appear on a Tokyo Metro station chart (e.g. 三田線 through 目黒); not every Toei train |
+
+The site's drawer renders `congestion` as a chip, `congestion_cars` as one bar
+per car, `temperature_cars` as a min–max range, and `facilities` as an
+accessibility chip; the comfort row wraps so the accessibility chip is not
+truncated on narrow screens.
+
+## Output
+
+```jsonc
+{
+  "version": 1,
+  "generated_at": "2026-10-28T10:40:00+09:00",
+  "date": "2026-10-28",          // JST date, gate against the site's calendar
+  "count": 279,
+  "candidates": 329,
+  "stats": { "matched": 279, "unresolved": 47, "key_collision": 3 },
+  "unresolved_by_line": { "京浜東北線": 8 },
+  "trains": [{
+    "op": "JR-East",
+    "line": "中央線快速",
+    "number": "533M",
+    "from": "相模湖",              // station the feed reports the train approaching
+    "to": "小淵沢",
+    "cars": 10,
+    "comfort": { "congestion": { "class": 1, "rate": 24 } },
+    "scheduled": { "dep": "10:40", "origin": "相模湖", "stops": ["相模湖", "..."] },
+    "suki": [{ "key": "9594", "size": 12, "overlap": 1.0 }]
+  }],
+  "by_suki_key": { "9594": [ /* same record(s) */ ] }
+}
+```
+
+`scheduled.dep` is the **origin departure minute** of the resolved run — the
+same basis as the site's `t.dep[0]`, which is how the browser tells two runs of
+the same tmap key apart. `by_suki_key` is therefore key -> list.
+
+`class` is the operator's crowding grade (1 roomy ... 3 crowded); `rate` is a
+percentage and may exceed 100. Tokyo Metro publishes no percentage, so its
+records carry `level` (1-6) instead; `est: true` means today's measurement for
+that departure was not published yet and the value is the 5-day average, which
+the drawer labels "5日平均".
+
+Per-car sources add `congestion_cars` (percentage per car, `null` where the
+sensor is missing), `temperature_cars` (°C per car) and `facilities`
+(`wheelchair`, `stroller`, `wifi`, `restroom`, `luggage`) inside `comfort`.
+`cars` at the top level is the formation length.
+
+## Run locally
+
+```bash
+git clone https://github.com/ooep/delay ../delay
+DELAY_DIR=../delay python3 -m comfort.bake --out data
+DELAY_DIR=../delay python3 -m comfort.verify data/comfort.json
+```
+
+`--files 57 40` restricts the bake to a few cloudrail files for debugging.
+`verify` re-checks every entry against `data/suki/trains_*.json` with the site's
+own filter and aborts the workflow before the commit on any mismatch.
+
+The bake also refuses to overwrite a snapshot with less than half the previous
+count, so a silently broken source cannot replace good data with an empty board.
+
+## Known limitations
+
+- **Pre-encryption plaintext is still retrievable from git history.** The
+  encryption migration (`encrypted/` + `encryption/`) protects only the current
+  and future HEAD. The business scripts committed before it (`comfort/*.py`) can
+  still be recovered in full, e.g. `git show <old-commit>:comfort/bake.py`.
+  Erasing them for good would require a history rewrite (rewrites every commit
+  sha) or a fresh repository; neither has been done, so treat the history as
+  still containing the plaintext.
+- **Mapping code is pinned to a plaintext ref of `ooep/delay`.** `bake.yml`
+  checks out `ooep/delay` at `ref: 297a4cfa…`, an immutable old commit that still
+  ships the plaintext `baker/` package. That ref stays fetchable forever, but it
+  means this repo depends long-term on plaintext code that also lives in delay's
+  git history and cannot be removed by encryption alone.

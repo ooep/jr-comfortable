@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# CI-only plaintext staging: materialized by the decrypt step and removed by
+# finalize.sh, never tracked.
+/comfort/
+/ci/
+/.delay/

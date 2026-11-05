@@ -1,0 +1,158 @@
+name: bake-comfort
+
+# Business code is ciphertext-only (encrypted/**.enc + encryption/manifest.tsv).
+# Plaintext exists only inside the runner: verify-only gate, then materialize,
+# then run the steps, then remove every plaintext file and assert a clean
+# worktree. Keys come from the CODE_KEY secret; log output goes through
+# encryption/logrun.sh so business identifiers never reach the run log.
+#
+# The mapping code is checked out from a pinned upstream ref into .delay; its
+# timetable snapshots are refreshed separately from upstream main. Keeping the
+# two sources separate is intentional and must not be collapsed.
+
+on:
+  schedule:
+    # 東京時間 05:00 - 次日 02:00 (JST = UTC+9); GitHub cron jitters 5-20 min
+    - cron: "*/10 20-23 * * *"
+    - cron: "*/10 0-16 * * *"
+    - cron: "0 17 * * *"    # 最後の一本: JST 02:00
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "commit data on this branch (test only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write   # chain the next bake from this run (GITHUB_TOKEN)
+
+# No workflow-level concurrency on purpose. A run has to be able to settle on
+# `failure`: when the chain step slept inside the same run, a newer run's
+# cancel-in-progress rewrote the whole run to `cancelled` and the red verify
+# failure disappeared behind grey. Deduplication is now per job.
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One bake per ref at a time; a newer run cancels the older bake only. The
+    # ref is part of the key so that testing a branch cannot cancel production.
+    concurrency:
+      group: bake-comfort-${{ github.ref_name }}
+      cancel-in-progress: true
+    env:
+      DELAY_DIR: .delay
+      # Repo variables are not exported to the shell automatically; logrun
+      # needs this to switch from redacted-plaintext to sealed output.
+      SEALED_LOG: ${{ vars.SEALED_LOG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mapping code is pinned to a ref that still ships plaintext upstream
+      # code. The pin freezes code only; timetable snapshots still follow
+      # upstream main (see step 3 below). This ref must never be rolled
+      # forward blindly.
+      - uses: actions/checkout@v4
+        with:
+          repository: ooep/delay
+          ref: 297a4cfadbdab0f6c250bd0ad9d474639435961c
+          path: .delay
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 1) verify every blob, write nothing
+      - name: Step 1/7
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+        run: bash encryption/logrun.sh 1/7 bash encryption/prep.sh 1
+
+      # 2) re-verify and materialize plaintext in place
+      - name: Step 2/7
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+        run: bash encryption/logrun.sh 2/7 bash encryption/prep.sh 2
+
+      # 3) refresh timetable snapshots (code stays pinned)
+      - name: Step 3/7
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+        run: bash encryption/logrun.sh 3/7 bash ci/step.sh comfort 3
+
+      # 4) bake. Exit 3 = the guard REFUSED the snapshot (cross-day rollover or
+      # same-day shrink). That is normal protection, not a fault, so it is mapped
+      # to success + a warning; any other non-zero still fails the step. The
+      # exit-3 semantics inside ci/step.sh are unchanged (selftest asserts them).
+      - name: Step 4/7
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+          OOEP_SOFT_RC: "3"
+        run: |
+          set +e
+          bash encryption/logrun.sh 4/7 bash ci/step.sh comfort 4
+          rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning::bake refused (cross-day or shrink guard)"
+            exit 0
+          fi
+          exit "$rc"
+
+      # 5) independent re-check against the site's own timetable
+      - name: Step 5/7
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+        run: bash encryption/logrun.sh 5/7 bash ci/step.sh comfort 5
+
+      # 6) publish (default branch only, or an explicit test dispatch).
+      # On a guard refusal the bake step exits 0 (see Step 4/7), so this step
+      # still runs and commits the guard-reject ledger in data/state.json. A
+      # genuine bake failure skips it, so stale data is never committed.
+      - name: Step 6/7
+        if: github.ref_name == 'main' || github.event.inputs.publish == 'true'
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+          GIT_BRANCH: ${{ github.ref_name }}
+        run: bash encryption/logrun.sh 6/7 bash ci/step.sh comfort 6
+
+      # 7) always-on cleanup and worktree assertion
+      - name: Step 7/7
+        if: always()
+        run: bash encryption/finalize.sh .delay
+
+  # GitHub's `schedule` is heavily throttled, while the site drops data older
+  # than 45 minutes. Each run therefore queues the next one, which keeps the
+  # cadence. This lives in its own job so a failed bake settles as `failure`
+  # immediately instead of sleeping inside the bake job.
+  chain:
+    needs: [bake]
+    # always() keeps the chain alive after a failed bake. `result != cancelled`
+    # keeps it single-file: when a newer run cancelled this bake, that newer
+    # run owns the chain. Main-only: the pacer belongs to production; branch
+    # runs are one-shot tests and must not re-dispatch.
+    if: always() && needs.bake.result != 'cancelled' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: chain-keeper-${{ github.ref_name }}
+      cancel-in-progress: true
+    steps:
+      - name: Wait 9 min, then queue the next bake
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          sleep 540
+          code=$(curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/bake.yml/dispatches" \
+            -d "{\"ref\":\"${{ github.ref_name }}\"}" \
+            -o /dev/null -w '%{http_code}')
+          echo "chain dispatch HTTP $code"
+          if [ "$code" != "204" ]; then
+            echo "::error::chain dispatch returned HTTP $code"
+            exit 1
+          fi
