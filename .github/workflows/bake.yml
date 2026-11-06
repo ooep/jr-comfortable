@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ooep/delay
-          ref: f050db94c8e4fc620bb565073c68bfa2234e6dce
+          ref: de51ad289b031a9587e33bebf8d3726d0057d0b3
           path: .delay
           fetch-depth: 1
 
