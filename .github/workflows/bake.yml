@@ -49,8 +49,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Mapping code is pinned to a ref that still ships plaintext upstream
-      # code. The pin freezes code only; timetable snapshots still follow
+      # Mapping code is pinned to the clean-rebuilt delay HEAD (ciphertext).
+      # The pin freezes code only; timetable snapshots still follow
       # upstream main (see step 3 below). This ref must never be rolled
       # forward blindly.
       - uses: actions/checkout@v4
@@ -63,6 +63,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # 2.5) The pin now ships ciphertext (clean rebuild 2026-11-06): decrypt
+      # the pinned delay code in place before snapshot refresh/bake. Plaintext
+      # exists only inside this CI workspace; Step 7/7 finalize removes it.
+      - name: Decrypt pinned delay
+        env:
+          OOEP_PASSPHRASE: ${{ secrets.CODE_KEY }}
+        working-directory: .delay
+        run: bash encryption/prep.sh 2
 
       # 1) verify every blob, write nothing
       - name: Step 1/7
