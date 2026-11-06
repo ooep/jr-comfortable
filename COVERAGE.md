@@ -18,10 +18,10 @@
 
 | 运营方 | 列车拥挤 | 逐车拥挤 | 车内温度 | 无障碍/车内设备 | 公开渠道（已实测） | 备注 |
 |---|---|---|---|---|---|---|
-| JR东日本 | ○ 等级+百分比（绿色车厢另给） | — | — | — | cloudrail（官方 App 后端，匿名注册即可）；`train_*.json` 实测只有 `organizationBasicInfo[].congestionRate` / `greenCarCongestionRate` + 编组数 | 首都圈通勤线；新干线/特急无读数。App 里的逐车/温度不在公开文档中，取不到 |
-| JR西日本 | ○ 百分比 | ○ 每车百分比 | ○ 每车 ℃ | ○ 轮椅/婴儿车/Wi-Fi/厕所/行李架 | `https://www.train-guide.westjr.co.jp/api/v3/trainmonitorinfo.json`（与位置 feed 同源，按列车号 join） | 近畿/北陆/冈山/广岛/山阴；`-1`=该车无传感器，`status!=1` 整车置空 |
-| 大阪 Metro | ○ 百分比 | ○ 每车百分比 | ○ 每车 ℃ | — | `https://api.mobility-operation-info.emetro-app.osakametro.co.jp/app/api/v1/trainlocation?route_code=N`（公开 App API key）；payload 实测仅 `trainCarCongestionList` / `trainCarTemperatureList` | 9 条线；无列车号，用位置+时刻锚定；直通覆盖北急/近鉄けいはんな |
-| 东京 Metro | ○ 1–6 级 | — | — | — | CrowdNavi `https://tmcawebapp1.tokyometro.jp/v1/index2.html` 起头的「列車別混雑グラフ」静态页 | 9 条线 + 直通（东武/东急/西武/相鉄/东叶/埼玉高速/みなとみらい/JR East/小田急）；今日折线 + 5 日平均柱，未发布今日值时打 `est` |
+| JR东日本 | ○ 等级+百分比（绿色车厢另给） | — | — | — | 官方 App 后端（匿名注册即可）；逐线数据文件实测只有 `organizationBasicInfo[].congestionRate` / `greenCarCongestionRate` + 编组数 | 首都圈通勤线；新干线/特急无读数。App 里的逐车/温度不在公开文档中，取不到 |
+| JR西日本 | ○ 百分比 | ○ 每车百分比 | ○ 每车 ℃ | ○ 轮椅/婴儿车/Wi-Fi/厕所/行李架 | 官方列车情报 API（与位置 feed 同源，按列车号 join） | 近畿/北陆/冈山/广岛/山阴；`-1`=该车无传感器，`status!=1` 整车置空 |
+| 大阪 Metro | ○ 百分比 | ○ 每车百分比 | ○ 每车 ℃ | — | 官方 App API（公开 App API key，按线路代码查询）；payload 实测仅 `trainCarCongestionList` / `trainCarTemperatureList` | 9 条线；无列车号，用位置+时刻锚定；直通覆盖北急/近鉄けいはんな |
+| 东京 Metro | ○ 1–6 级 | — | — | — | 运营方「列車別混雑グラフ」静态页（按线/方向分页） | 9 条线 + 直通（东武/东急/西武/相鉄/东叶/埼玉高速/みなとみらい/JR East/小田急）；今日折线 + 5 日平均柱，未发布今日值时打 `est` |
 | 都营地下铁 | ○ 1–6 级（仅三田線共用段） | — | — | — | 同上：南北線白金台页会列出目黒—白金高輪共用段上的三田線列车 | **不是全线**：浅草線/新宿線/大江戸線/三田線其余段没有公开实时读数；都营自家 App 是 NAVITIME 预报 |
 | 小田急 | ○ 百分比（列车当前值） | ○ 每车百分比 | ○ 每车 ℃ | — | 官方列车位置后端 `https://d6oynijiy33tb.cloudfront.net/trains/schedules/depart?station_code=NNN&up_down=01\|10`（公开 x-api-key，与 delay 同一把，仅存于 `delay/baker/odakyu.py`）；`car_infos[]` 实测 35 s 内变化 | 小田原線/江ノ島線/多摩線；逐车传感器只装在部分编组，无传感器车为 0/缺省（已置空）。班次身份用 `/trains/{code}?version=v2` 的完整停站序列 + 全线时刻钉死 |
 
@@ -101,7 +101,7 @@
 
 | 运营方 | 官方实时舒适度 | 公开匿名接口 | 端点/字段（实测） | 判定 | 证据 |
 |---|---|---|---|---|---|
-| 都営地下鉄（全线） | 仅预报：App 号车混雑是 NAVITIME 预测；官网只有 PDF（Incapsula 拦截） | — | 官网 `subway/kanren/congestion/train.html`；三田線共用段由 Metro CrowdNavi 提供 | 仅预报（共用段已接入） | https://www.kotsu.metro.tokyo.jp/subway/kanren/congestion/train.html |
+| 都営地下鉄（全线） | 仅预报：App 号车混雑是 NAVITIME 预测；官网只有 PDF（Incapsula 拦截） | — | 官网 `subway/kanren/congestion/train.html`；三田線共用段经东京 Metro 混雑页提供 | 仅预报（共用段已接入） | https://www.kotsu.metro.tokyo.jp/subway/kanren/congestion/train.html |
 | 横浜市営地下鉄 | — | 位置 JSON | `yokohama.train-location.transfer.navitime.biz/blue-line/locations` 200 JSON：`alerts/trains/update`；车 `car_composition/delay_minutes/destination/direction/position_id/train_id/train_type`，无舒适度 | 无 | https://yokohama.train-location.transfer.navitime.biz/blue-line/locations?lang=ja&format=json |
 | 東京モノレール | — | — | `news/offpeak.html` 200 HTML；PDF 为 2023-04 浜松町 6–10 时利用状况 | 仅PDF | https://www.tokyo-monorail.co.jp/news/offpeak.html |
 | ゆりかもめ | — | — | 周次 PNG（2025/4/21–25 乗車効率），回顾统计 | 无 | https://www.yurikamome.co.jp/company/news/20250428_3592.html |
@@ -196,9 +196,9 @@ JR四国官方位置 feed（`train.jr-shikoku.co.jp/g?arg1=train&arg2=train`）�
 
 | 运营方 | 车内 Wi-Fi 现状 | 处理 |
 |---|---|---|
-| JR西日本 | `trainmonitorinfo` 逐车 `wifi` 设备位（部分车） | 唯一来自实时 payload 的 Wi-Fi 数据，已输出 `facilities.wifi` |
+| JR西日本 | 官方列车情报 API payload 里的逐车 `wifi` 设备位（部分车） | 唯一来自实时 payload 的 Wi-Fi 数据，已输出 `facilities.wifi` |
 | JR四国 | 官方「JR四国の無料Wi-Fiサービス」：8600/8000 系特急（しおかぜ・いしづち等）、2700/2600 系特急（南風・うずしお等）、快速マリンライナー（グリーン席・指定席のみ） | 按车型公布的静态信息，无逐车/实时字段；不写入 comfort |
-| JR东日本 | 新干线/特急有付费 Wi-Fi；cloudrail 只覆盖通勤线，无对应列车记录 | 不标注 |
+| JR东日本 | 新干线/特急有付费 Wi-Fi；官方 App 数据只覆盖通勤线，无对应列车记录 | 不标注 |
 | 东京 Metro | 访日客免费 Wi-Fi「Metro_Free_Wi-Fi」车内服务于 2022-06-30 结束 | 不标注 |
 | 都営地下鉄 | Toei_Subway_Free_Wi-Fi / TRAVEL JAPAN Wi-Fi 于 2023-03-31 结束；现行仅部分车站 OpenRoaming | 不标注 |
 | 大阪 Metro | 运营商 Wi-Fi 2022-12 / 2023-03 结束，Osaka Free Wi-Fi 2023-03 结束 | 不标注 |
@@ -236,15 +236,15 @@ Wi-Fi，但没有逐车/实时字段，不写入 comfort。给其他线路写静
 
 | 运营方 | 候选 | 已映射 | 命中率 |
 | --- | --- | --- | --- |
-| JR东日本（cloudrail） | 424 | 379 | 89% |
-| JR西日本（train-guide） | 201 | 148 | 74% |
-| 东京 Metro / 都营（CrowdNavi） | 1468 | 1468 | 100% |
+| JR东日本（官方 App） | 424 | 379 | 89% |
+| JR西日本（官方 API） | 201 | 148 | 74% |
+| 东京 Metro / 都营（混雑页） | 1468 | 1468 | 100% |
 | 大阪 Metro | 25 | 23 | 92% |
 | 合计 | 2118 | 2018 | 95% |
 
 以上是 2026-10-28 19:18 JST 晚高峰快照；23:2x 深夜复测 1485 候选 / 1427 已映射，
 `comfort.verify` 1427/1427（深夜班次少，分母不同，规则没有退化）。18:5x 的对照是
-1983→1891（95%）；19:18 这轮东京 Metro 的 `_deps` 停站索引修复（见下）把 CrowdNavi
+1983→1891（95%）；19:18 这轮东京 Metro 的 `_deps` 停站索引修复（见下）把混雑页
 候选从 1401 抬到 1468 且全部命中。
 
 未映射的 100 条 = 找不到唯一班次 74 条 + 争用同一 slot 时被证据更强的一方取代 15 条
@@ -308,7 +308,7 @@ Wi-Fi，但没有逐车/实时字段，不写入 comfort。给其他线路写静
 
 ### 线路是否抓全
 
-- **JR东日本**：对 cloudrail 的 `train_<id>.json` 命名空间做了 464 个 id 的探测
+- **JR东日本**：对官方 App 的逐线数据文件命名空间做了 464 个 id 的探测
   （1..200 / 901..920 / 1001..1011 / 7801..7811 / 各线路 `-1..-4` 子文件）。除已抓的 63 个外，
   只多出 `42`（小海线）、`65`（八高线）、`66`（水户线）、`103`（仙石东北线/石卷线）四个真实
   文件，且其中每一列车的 `congestionRate` 都是 `{"valid": false, "isTarget": false}` ——
@@ -347,7 +347,7 @@ Wi-Fi，但没有逐车/实时字段，不写入 comfort。给其他线路写静
 同理，4 条「東京メトロ 山手線」是東西線直通三鷹车次，key 的 lines 里没有 Metro 名时
 `_pick_line` 回退到 lines[0]，属标签问题。
 
-19:1x 修掉一处影响**所有** CrowdNavi 页的时刻索引错误：`_deps` 在算出锚点发车之后
+19:1x 修掉一处影响**所有**混雑页的时刻索引错误：`_deps` 在算出锚点发车之后
 又多加了一站停站（`s = 始発分, run1, dwell1, …`，循环 `Σ(run_i+dwell_i), i<anchor`
 本身已经是该站发车，末尾再加 `dwells[anchor]` 等于把每一行都推迟一个停站，通常 1 分）。
 3 分钟间隔时 ±1 窗口还能吸收这 1 分；银座线晚高峰 2 分钟间隔时，行时刻正好落在

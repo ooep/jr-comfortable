@@ -29,22 +29,22 @@ The difference from delay is the candidate set. Delay only looks at trains that
 are running late; comfort looks at every train carrying a reading.
 
 Tokyo Metro is the one source that does not go through
-`resolve_direct_by_time`: CrowdNavi publishes no remaining-stop list, which the
-resolver needs for its `official` path. It anchors on (station, scheduled
-departure, destination) instead, verifies the run against `SukiTimetable`, and
-drops a row whenever two rows of the same page claim the same run. The
-resulting key and origin departure are still the site's own, which is why the
-browser joins it the same way.
+`resolve_direct_by_time`: the Tokyo Metro congestion-page source publishes no
+remaining-stop list, which the resolver needs for its `official` path. It
+anchors on (station, scheduled departure, destination) instead, verifies the
+run against `SukiTimetable`, and drops a row whenever two rows of the same
+page claim the same run. The resulting key and origin departure are still the
+site's own, which is why the browser joins it the same way.
 
 ## Sources
 
 | Source | Fields | Notes |
 |---|---|---|
-| JR-East (cloudrail, official app) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings; the public app feed has no per-car or temperature fields |
+| JR-East (official app data) | `congestionRate` (class + rate %), `greenCarCongestionRate`, cars | 首都圏 commuter lines; Shinkansen and limited expresses carry no readings; the public app feed has no per-car or temperature fields |
 | Osaka Metro | per-car congestion + temperature | all 9 lines, official app data |
-| JR-West | per-car congestion, temperature, facilities | Kinki/Hokuriku/Okayama/Hiroshima/Sanin; train-guide `trainmonitorinfo.json` (congestion %, °C, wheelchair/stroller/Wi-Fi/restroom/luggage per car) |
-| Tokyo Metro (CrowdNavi) | `congestion.level` 1–6, `congestion.est` | all 9 lines + through services (東武/東急/JR); per-station 列車別混雑グラフ, no API key needed |
-| Toei (CrowdNavi pages) | `congestion.level` 1–6, `congestion.est` | only runs that appear on a Tokyo Metro station chart (e.g. 三田線 through 目黒); not every Toei train |
+| JR-West | per-car congestion, temperature, facilities | Kinki/Hokuriku/Okayama/Hiroshima/Sanin; official train-info API (congestion %, °C, wheelchair/stroller/Wi-Fi/restroom/luggage per car) |
+| Tokyo Metro (official congestion pages) | `congestion.level` 1–6, `congestion.est` | all 9 lines + through services (東武/東急/JR); per-station 列車別混雑グラフ, no API key needed |
+| Toei (same congestion pages) | `congestion.level` 1–6, `congestion.est` | only runs that appear on a Tokyo Metro station chart (e.g. 三田線 through 目黒); not every Toei train |
 
 The site's drawer renders `congestion` as a chip, `congestion_cars` as one bar
 per car, `temperature_cars` as a min–max range, and `facilities` as an
@@ -100,7 +100,8 @@ DELAY_DIR=../delay python3 -m comfort.bake --out data
 DELAY_DIR=../delay python3 -m comfort.verify data/comfort.json
 ```
 
-`--files 57 40` restricts the bake to a few cloudrail files for debugging.
+`--files 57 40` restricts the bake to a few JR-East official-app files for
+debugging.
 `verify` re-checks every entry against `data/suki/trains_*.json` with the site's
 own filter and aborts the workflow before the commit on any mismatch.
 
